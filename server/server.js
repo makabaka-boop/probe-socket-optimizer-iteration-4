@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { NoPerfectAssignmentError } from './hungarian.js';
 import { analyzeMandatoryPairs } from './mandatory.js';
-import { validateCosts } from './validation.js';
+import { solveMigration } from './migration.js';
+import { validateCosts, validateReference } from './validation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = join(__dirname, '..', 'dist');
@@ -46,8 +47,49 @@ export async function buildServer() {
         message: result.reason,
       });
     }
+    const n = result.n;
+
+    // 迁移模式：请求显式携带 reference 字段时启用。
+    // 参考的规模/排列/字段非法在“求解前”整批拒绝（422），即使矩阵本身可解也不求解；
+    // 参考边是否仍允许不在此校验——禁配边上的旧配对只用于计变更行数。
+    // 完全不带 reference 的旧版请求走原路径，响应结构一字不变。
+    let reference = null;
+    const hasReference =
+      request.body !== null &&
+      typeof request.body === 'object' &&
+      Object.prototype.hasOwnProperty.call(request.body, 'reference');
+    if (hasReference) {
+      const refResult = validateReference(request.body.reference, n);
+      if (!refResult.ok) {
+        return reply.status(422).send({
+          status: 'error',
+          error: 'INVALID_INPUT',
+          message: refResult.reason,
+        });
+      }
+      reference = refResult.reference;
+    }
 
     try {
+      if (reference) {
+        // 迁移求解：先最小化新矩阵总成本，再在同成本完美匹配中最小化相对参考的变更行数。
+        // 两级目标独立求解，不用放大系数合并；标记针对新展示配对重新分析。
+        const { assignment, totalCost, pairFlags, changedRows, changedCount } = solveMigration(
+          request.body.costs,
+          reference
+        );
+        return reply.send({
+          status: 'ok',
+          n,
+          assignment,
+          totalCost,
+          pairFlags,
+          reference: reference.slice(), // 回显归一化参考，供页面核对结果归属
+          changedRows,
+          changedCount,
+        });
+      }
+
       // 同一次求解内完成最优匹配与必然连线分析：求解器可任选一个最优配对，
       // pairFlags 严格对应下方返回（即页面展示）的这一组配对。
       const { assignment, totalCost, pairFlags } = analyzeMandatoryPairs(request.body.costs);

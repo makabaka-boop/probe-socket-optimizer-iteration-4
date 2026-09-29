@@ -71,6 +71,33 @@ export function bruteForceOptimalSet(costs) {
   return { totalCost, optimalAssignments, flagsFor };
 }
 
+// 迁移两级目标的独立穷举预言机：先求最小总代价，再在所有同成本最优完美匹配中
+// 枚举相对参考排列的最小变更行数，以及达到该最小值的全部最优排列。
+// 返回 null 表示不存在完美匹配。
+export function bruteForceMigration(costs, reference) {
+  const oracle = bruteForceOptimalSet(costs);
+  if (oracle === null) return null;
+
+  const changedOf = (p) => p.reduce((acc, j, i) => acc + (j !== reference[i] ? 1 : 0), 0);
+  let minChanged = Infinity;
+  for (const p of oracle.optimalAssignments) {
+    const c = changedOf(p);
+    if (c < minChanged) minChanged = c;
+  }
+  const leastChangedAssignments = oracle.optimalAssignments.filter((p) => changedOf(p) === minChanged);
+
+  return {
+    totalCost: oracle.totalCost,
+    minChanged,
+    leastChangedAssignments,
+    optimalAssignments: oracle.optimalAssignments,
+    changedOf,
+    // 针对“迁移后展示配对”的必然标记预言机：仍基于全部同成本最优集合，
+    // 与是否带参考无关（标记描述的是新矩阵最优集合结构，不是参考）。
+    flagsFor: oracle.flagsFor,
+  };
+}
+
 // 可复现的伪随机数（mulberry32），让随机测试与性能测试可重复。
 export function mulberry32(seed) {
   let a = seed >>> 0;

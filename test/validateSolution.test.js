@@ -102,6 +102,146 @@ describe('validateSolveResponse：禁配格与费用复算', () => {
   });
 });
 
+describe('validateSolveResponse：迁移模式（expectedReference 非 null）', () => {
+  const REF = [3, 0, 1, 2];
+
+  function migrationBody(overrides = {}) {
+    // 迁移成功基线：新配对即参考本身，零变更（参考恰好是最优 205 的展示配对）
+    return {
+      status: 'ok',
+      n: 4,
+      assignment: [3, 0, 1, 2],
+      totalCost: 205,
+      pairFlags: FLAGS,
+      reference: [3, 0, 1, 2],
+      changedRows: [],
+      changedCount: 0,
+      ...overrides,
+    };
+  }
+
+  it('零变更迁移响应通过，返回 migration 归属信息', () => {
+    const v = validateSolveResponse(migrationBody(), COSTS, REF);
+    expect(v.ok).toBe(true);
+    expect(v.migration).toEqual({ reference: REF, changedRows: [], changedCount: 0 });
+  });
+
+  it('有变更：另一个同成本最优配对时，changedRows 与复算一致', () => {
+    // 构造一个 assignment=[2,0,1,3]、总价也为 205 的矩阵场景：
+    // 直接以该 assignment 对 COSTS 复算（COSTS 上该配对成本不为 205），
+    // 所以这里用独立的小矩阵做端到端断言。
+    const costs = [
+      [5, 5],
+      [5, 5],
+    ];
+    const body = {
+      status: 'ok',
+      n: 2,
+      assignment: [1, 0],
+      totalCost: 10,
+      pairFlags: [
+        { forced: false, alternatives: 1 },
+        { forced: false, alternatives: 1 },
+      ],
+      reference: [0, 1],
+      changedRows: [0, 1],
+      changedCount: 2,
+    };
+    const v = validateSolveResponse(body, costs, [0, 1]);
+    expect(v.ok).toBe(true);
+    expect(v.migration.changedRows).toEqual([0, 1]);
+    expect(v.migration.changedCount).toBe(2);
+  });
+
+  it('普通模式请求（expectedReference=null）：迁移字段可有可无，migration 归一为 null', () => {
+    const v = validateSolveResponse(migrationBody(), COSTS, null);
+    expect(v.ok).toBe(true);
+    expect(v.migration).toBeNull();
+  });
+
+  const malformedMigration = [
+    ['缺 reference 回显', () => { const b = migrationBody(); delete b.reference; return b; }],
+    ['reference 不是数组', () => migrationBody({ reference: '3012' })],
+    ['reference 为 null', () => migrationBody({ reference: null })],
+    ['reference 长度不足', () => migrationBody({ reference: [3, 0, 1] })],
+    ['reference 内容不一致（串台/迟到响应）', () => migrationBody({ reference: [0, 1, 2, 3] })],
+    ['reference 仅一行不同', () => migrationBody({ reference: [3, 0, 2, 1] })],
+    ['缺 changedRows', () => { const b = migrationBody(); delete b.changedRows; return b; }],
+    ['changedRows 不是数组', () => migrationBody({ changedRows: {} })],
+    ['changedRows 含越界行', () => migrationBody({ changedRows: [4] })],
+    ['changedRows 含负数', () => migrationBody({ changedRows: [-1] })],
+    ['changedRows 重复', () => migrationBody({ changedRows: [0, 0] })],
+    ['changedRows 未升序', () => migrationBody({ changedRows: [1, 0] })],
+    ['changedRows 非整数', () => migrationBody({ changedRows: [0.5] })],
+    ['changedCount 缺失', () => { const b = migrationBody(); delete b.changedCount; return b; }],
+    ['changedCount 与行数不符', () => migrationBody({ changedCount: 1 })],
+    ['changedCount 非安全整数', () => migrationBody({ changedCount: 0.5 })],
+  ];
+  for (const [name, make] of malformedMigration) {
+    it(`迁移字段非法拒绝：${name}`, () => {
+      const v = validateSolveResponse(make(), COSTS, REF);
+      expect(v.ok).toBe(false);
+      expect(typeof v.reason).toBe('string');
+    });
+  }
+
+  it('changedRows 与 assignment/reference 的实际差异不符：拒绝', () => {
+    // 响应声称零变更，但 assignment 第 0 行已改配列 0（reference[0]=3）
+    const costs = [
+      [5, 5],
+      [5, 5],
+    ];
+    const body = {
+      status: 'ok',
+      n: 2,
+      assignment: [0, 1],
+      totalCost: 10,
+      pairFlags: [
+        { forced: false, alternatives: 1 },
+        { forced: false, alternatives: 1 },
+      ],
+      reference: [1, 0],
+      changedRows: [],
+      changedCount: 0,
+    };
+    const v = validateSolveResponse(body, costs, [1, 0]);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain('changedRows');
+  });
+
+  it('迁移模式下 changedRows 多报未变更行：拒绝', () => {
+    const costs = [
+      [5, 5],
+      [5, 5],
+    ];
+    const body = {
+      status: 'ok',
+      n: 2,
+      assignment: [0, 1],
+      totalCost: 10,
+      reference: [0, 1],
+      changedRows: [1],
+      changedCount: 1,
+    };
+    const v = validateSolveResponse(body, costs, [0, 1]);
+    expect(v.ok).toBe(false);
+  });
+
+  it('迁移模式不改变基础校验：无法复算总价仍拒绝', () => {
+    const v = validateSolveResponse(migrationBody({ totalCost: 999 }), COSTS, REF);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain('totalCost');
+  });
+
+  it('迁移模式命中禁配格仍拒绝', () => {
+    const costs = COSTS.map((r) => r.slice());
+    costs[0][3] = null;
+    const v = validateSolveResponse(migrationBody({ totalCost: 145 }), costs, REF);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain('禁配');
+  });
+});
+
 describe('validateSolveResponse：pairFlags 畸形标记', () => {
   const cases = [
     ['pairFlags 长度不足', []],

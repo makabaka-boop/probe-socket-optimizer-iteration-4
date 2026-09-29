@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { buildServer } from '../server/server.js';
-import { mulberry32, bruteForceOptimalSet, randomCostMatrix } from './helpers.js';
+import { mulberry32, bruteForceMigration, bruteForceOptimalSet, randomCostMatrix } from './helpers.js';
 
 // 支持两种运行方式：
 //   1) 默认：直接在进程内注入完整 HTTP 请求（含 JSON 解析）；
@@ -275,6 +275,184 @@ describe('POST /api/solve：必然连线标记', () => {
     expect(second.data.assignment[0]).not.toBe(j0);
     // 替代问题中每个探针只剩唯一列：新方案全部必然，而非沿用排除前的可替换标记
     expect(second.data.pairFlags.every((f) => f.forced === true && f.alternatives === 0)).toBe(true);
+  });
+});
+
+describe('POST /api/solve：迁移模式（reference 两级目标）', () => {
+  it('同价平局 + 参考：零变更保留参考，回显参考与 changedRows', async () => {
+    const tie = [
+      [5, 5],
+      [5, 5],
+    ];
+    const { status, data } = await callSolve({ costs: tie, reference: [0, 1] });
+    expect(status).toBe(200);
+    expect(data.status).toBe('ok');
+    expect(data.totalCost).toBe(10);
+    expect(data.assignment).toEqual([0, 1]);
+    expect(data.reference).toEqual([0, 1]);
+    expect(data.changedRows).toEqual([]);
+    expect(data.changedCount).toBe(0);
+    expect(data.pairFlags).toHaveLength(2);
+    // 新矩阵全同价：标记仍针对当前配对（可替换），不沿用任何旧结论
+    expect(data.pairFlags.every((f) => f.forced === false && f.alternatives === 1)).toBe(true);
+  });
+
+  it('严格最优与参考冲突：必须达到最小成本，再最小化变更行', async () => {
+    // 恒等分配 101，交叉分配 40：即使参考是恒等，也只能返回交叉（2 行变更）
+    const costs = [
+      [1, 20],
+      [20, 100],
+    ];
+    const { status, data } = await callSolve({ costs, reference: [0, 1] });
+    expect(status).toBe(200);
+    expect(data.assignment).toEqual([1, 0]);
+    expect(data.totalCost).toBe(40);
+    expect(data.changedRows).toEqual([0, 1]);
+    expect(data.changedCount).toBe(2);
+    expect(data.reference).toEqual([0, 1]);
+  });
+
+  it('参考边在新矩阵已禁配：仍可求解，该行必然计入变更', async () => {
+    const costs = [
+      [null, 5],
+      [5, 5],
+    ];
+    const { status, data } = await callSolve({ costs, reference: [0, 1] });
+    expect(status).toBe(200);
+    expect(data.assignment).toEqual([1, 0]);
+    expect(data.changedRows).toEqual([0, 1]);
+    expect(data.changedCount).toBe(2);
+    // 唯一可行：全部必然（新分析，不是旧方案的标记）
+    expect(data.pairFlags.every((f) => f.forced === true && f.alternatives === 0)).toBe(true);
+  });
+
+  it('随机小矩阵：两级目标、禁配、并列解与穷举预言机一致（多轮）', async () => {
+    const rng = mulberry32(2026092901);
+    for (let t = 0; t < 50; t++) {
+      const n = 1 + Math.floor(rng() * 5);
+      const costs = randomCostMatrix(n, rng, {
+        forbiddenRate: t % 3 === 0 ? 0.4 : t % 3 === 1 ? 0.2 : 0,
+        maxCost: t % 2 === 0 ? 3 : 100,
+      });
+      // 合法随机排列参考（可能指向禁配边，合法）
+      const reference = Array.from({ length: n }, (_, i) => i);
+      for (let i = n - 1; i > 0; i--) {
+        const k = Math.floor(rng() * (i + 1));
+        [reference[i], reference[k]] = [reference[k], reference[i]];
+      }
+
+      const { status, data } = await callSolve({ costs, reference });
+      const oracle = bruteForceMigration(costs, reference);
+      if (oracle === null) {
+        expect(status).toBe(409);
+        expect(data.assignment).toBeUndefined();
+        expect(data.changedRows).toBeUndefined();
+        expect(data.reference).toBeUndefined();
+        continue;
+      }
+      expect(status).toBe(200);
+      expect(data.totalCost).toBe(oracle.totalCost);
+      expect(data.changedCount).toBe(oracle.minChanged);
+      const shown = oracle.leastChangedAssignments.some((p) =>
+        p.every((j, i) => j === data.assignment[i])
+      );
+      expect(shown).toBe(true);
+      expect(data.reference).toEqual(reference);
+      const expectedRows = data.assignment
+        .map((j, i) => (j !== reference[i] ? i : -1))
+        .filter((i) => i >= 0);
+      expect(data.changedRows).toEqual(expectedRows);
+      expect(data.pairFlags).toEqual(oracle.flagsFor(data.assignment));
+    }
+  });
+
+  it('迁移模式无完美匹配：409 且不携带配对、参考回显或变更行', async () => {
+    const costs = [
+      [5, null, null],
+      [2, null, null],
+      [7, 1, 3],
+    ];
+    const { status, data } = await callSolve({ costs, reference: [0, 1, 2] });
+    expect(status).toBe(409);
+    expect(data.error).toBe('NO_PERFECT_ASSIGNMENT');
+    expect(data.assignment).toBeUndefined();
+    expect(data.totalCost).toBeUndefined();
+    expect(data.pairFlags).toBeUndefined();
+    expect(data.reference).toBeUndefined();
+    expect(data.changedRows).toBeUndefined();
+    expect(data.changedCount).toBeUndefined();
+  });
+
+  const badReferences = [
+    ['reference 不是数组', { costs: [[1, 2], [3, 4]], reference: '01' }],
+    ['reference 为 null（字段存在但非法）', { costs: [[1, 2], [3, 4]], reference: null }],
+    ['reference 长度不足', { costs: [[1, 2], [3, 4]], reference: [0] }],
+    ['reference 长度超过 n', { costs: [[1, 2], [3, 4]], reference: [0, 1, 2] }],
+    ['reference 列重复', { costs: [[1, 2], [3, 4]], reference: [0, 0] }],
+    ['reference 列越界（=n）', { costs: [[1, 2], [3, 4]], reference: [0, 2] }],
+    ['reference 列越界（负数）', { costs: [[1, 2], [3, 4]], reference: [-1, 1] }],
+    ['reference 含小数列下标', { costs: [[1, 2], [3, 4]], reference: [0.5, 1] }],
+    ['reference 含字符串', { costs: [[1, 2], [3, 4]], reference: ['0', 1] }],
+    ['reference 元素为 null', { costs: [[1, 2], [3, 4]], reference: [0, null] }],
+  ];
+
+  for (const [name, payload] of badReferences) {
+    it(`非法参考在求解前整批拒绝（422）：${name}`, async () => {
+      const { status, data } = await callSolve(payload);
+      expect(status).toBe(422);
+      expect(data.error).toBe('INVALID_INPUT');
+      expect(data.assignment).toBeUndefined();
+      expect(data.changedRows).toBeUndefined();
+    });
+  }
+
+  it('矩阵非法 + 参考非法：仍为 422，且绝不进入求解', async () => {
+    const { status, data } = await callSolve({ costs: [[1, 2]], reference: [0] });
+    expect(status).toBe(422);
+    expect(data.error).toBe('INVALID_INPUT');
+  });
+
+  it('参考合法但矩阵无完美匹配：先过参考校验，再由求解给出 409（而非 422）', async () => {
+    const costs = [
+      [null, null],
+      [null, null],
+    ];
+    const { status, data } = await callSolve({ costs, reference: [0, 1] });
+    expect(status).toBe(409);
+    expect(data.error).toBe('NO_PERFECT_ASSIGNMENT');
+  });
+
+  it('旧版请求不带 reference：响应不含任何迁移字段，结构与旧接口完全一致', async () => {
+    const { status, data } = await callSolve({ costs: good });
+    expect(status).toBe(200);
+    expect(Object.keys(data).sort()).toEqual(['assignment', 'n', 'pairFlags', 'status', 'totalCost']);
+    expect(data.reference).toBeUndefined();
+    expect(data.changedRows).toBeUndefined();
+    expect(data.changedCount).toBeUndefined();
+  });
+
+  it('n=400 迁移求解：三秒内返回精确结果与变更行', async () => {
+    const n = 400;
+    const rng = mulberry32(2026092902);
+    const costs = Array.from({ length: n }, () =>
+      Array.from({ length: n }, () => Math.floor(rng() * 1_000_000))
+    );
+    const reference = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i--) {
+      const k = Math.floor(rng() * (i + 1));
+      [reference[i], reference[k]] = [reference[k], reference[i]];
+    }
+    const { status, data, elapsedMs } = await callSolve({ costs, reference });
+    expect(status).toBe(200);
+    expect(data.assignment).toHaveLength(n);
+    expect(data.pairFlags).toHaveLength(n);
+    expect(data.reference).toEqual(reference);
+    expect(data.changedRows).toHaveLength(data.changedCount);
+    const sum = assertAssignmentPerfect(costs, data.assignment);
+    expect(sum).toBe(data.totalCost);
+    // eslint-disable-next-line no-console
+    console.log(`n=${n} 迁移 API 耗时 ${Math.round(elapsedMs)} ms，变更 ${data.changedCount} 行`);
+    expect(elapsedMs).toBeLessThan(3000);
   });
 });
 

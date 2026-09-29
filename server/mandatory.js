@@ -32,8 +32,24 @@ import { hungarianDetailed, NoPerfectAssignmentError } from './hungarian.js';
  * @throws {NoPerfectAssignmentError} 不存在覆盖全部行列的完美匹配
  */
 export function analyzeMandatoryPairs(costs) {
-  const n = costs.length;
   const { assignment, totalCost, u, v } = hungarianDetailed(costs);
+  const { pairFlags } = analyzeTightMatching(costs, assignment, u, v);
+  return { assignment, totalCost, pairFlags };
+}
+
+/**
+ * 在已知最优势函数 u/v 与一个由紧边组成的完美匹配 assignment 的前提下，
+ * 做必然连线分析（等势子图 + 强连通分量）。求解与分析解耦：
+ * 迁移求解用第二次匹配（仍是紧边完美匹配）替换求解器默认配对时，
+ * 势函数仍证明其最优性，标记必须针对“新展示配对”重新计算，不能沿用旧配对的结论。
+ * @param {ReadonlyArray<ReadonlyArray<number | null>>} costs n×n 原矩阵
+ * @param {ArrayLike<number>} assignment 紧边完美匹配：assignment[i] = 第 i 行匹配的列
+ * @param {ArrayLike<number>} u 终态行势（0 基）
+ * @param {ArrayLike<number>} v 终态列势（0 基）
+ * @returns {{ pairFlags: Array<{ forced: boolean, alternatives: number }> }}
+ */
+export function analyzeTightMatching(costs, assignment, u, v) {
+  const n = costs.length;
 
   // 节点编号：0..n-1 为行（探针），n..2n-1 为列（测试座）。
   const ROW = 2 * n;
@@ -85,7 +101,7 @@ export function analyzeMandatoryPairs(costs) {
     pairFlags[i] = { forced, alternatives };
   }
 
-  return { assignment, totalCost, pairFlags };
+  return { pairFlags };
 }
 
 // 迭代式 Tarjan：返回每个节点所属 SCC 编号（编号顺序为逆拓扑，仅需相等关系）。
