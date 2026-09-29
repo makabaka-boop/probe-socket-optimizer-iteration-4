@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { buildServer } from '../server/server.js';
-import { mulberry32, bruteForceOptimalSet, randomCostMatrix } from './helpers.js';
+import { mulberry32, bruteForceOptimalSet, bruteForceMigrate, randomCostMatrix } from './helpers.js';
 
 // 支持两种运行方式：
 //   1) 默认：直接在进程内注入完整 HTTP 请求（含 JSON 解析）；
@@ -12,14 +12,14 @@ beforeAll(async () => {
   if (!BASE_URL) app = await buildServer();
 });
 
-async function callSolve(payload, { raw = false } = {}) {
+async function callSolve(payload, { raw = false, path = '/api/solve' } = {}) {
   const started = performance.now();
   let status;
   let data;
 
   if (BASE_URL) {
     const body = raw ? payload : JSON.stringify(payload);
-    const resp = await fetch(`${BASE_URL}/api/solve`, {
+    const resp = await fetch(`${BASE_URL}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
@@ -29,7 +29,7 @@ async function callSolve(payload, { raw = false } = {}) {
   } else {
     const resp = await app.inject({
       method: 'POST',
-      url: '/api/solve',
+      url: path,
       headers: { 'content-type': 'application/json' },
       payload: raw ? payload : payload,
     });
@@ -61,6 +61,15 @@ function assertAssignmentPerfect(costs, assignment) {
     sum += costs[i][j];
   }
   return sum;
+}
+
+function randomPermutation(n, rng) {
+  const p = Array.from({ length: n }, (_, j) => j);
+  for (let i = n - 1; i > 0; i--) {
+    const k = Math.floor(rng() * (i + 1));
+    [p[i], p[k]] = [p[k], p[i]];
+  }
+  return p;
 }
 
 describe('POST /api/solve：成功', () => {
@@ -275,6 +284,212 @@ describe('POST /api/solve：必然连线标记', () => {
     expect(second.data.assignment[0]).not.toBe(j0);
     // 替代问题中每个探针只剩唯一列：新方案全部必然，而非沿用排除前的可替换标记
     expect(second.data.pairFlags.every((f) => f.forced === true && f.alternatives === 0)).toBe(true);
+  });
+});
+
+describe('POST /api/migrate：两级目标迁移', () => {
+  async function callMigrate(payload, opts) {
+    return callSolve(payload, { ...opts, path: '/api/migrate' });
+  }
+
+  it('参考即最优：返回新配对、精确费用与 0 变更行', async () => {
+    const { status, data } = await callMigrate({ costs: good, reference: [3, 0, 1, 2] });
+    expect(status).toBe(200);
+    expect(data.status).toBe('ok');
+    expect(data.mode).toBe('migrate');
+    expect(data.n).toBe(4);
+    expect(data.assignment).toEqual([3, 0, 1, 2]);
+    expect(data.totalCost).toBe(205);
+    expect(data.changedRows).toBe(0);
+    expect(data.reference).toEqual([3, 0, 1, 2]);
+    // 迁移模式不携带任何必然/可替换标记
+    expect(data.pairFlags).toBeUndefined();
+  });
+
+  it('全零并列：服务端必须返回参考本身（0 变更），而非任意最优', async () => {
+    const zero = [
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0],
+    ];
+    for (const reference of [
+      [2, 1, 0],
+      [1, 2, 0],
+    ]) {
+      const { status, data } = await callMigrate({ costs: zero, reference });
+      expect(status).toBe(200);
+      expect(data.totalCost).toBe(0);
+      expect(data.assignment).toEqual(reference);
+      expect(data.changedRows).toBe(0);
+    }
+  });
+
+  it('先最小成本、再最小变更：随机小矩阵与穷举两级预言机一致', async () => {
+    const rng = mulberry32(2026092902);
+    for (let t = 0; t < 80; t++) {
+      const n = 1 + Math.floor(rng() * 5);
+      const costs = randomCostMatrix(n, rng, {
+        forbiddenRate: t % 3 === 0 ? 0.35 : t % 3 === 1 ? 0.15 : 0,
+        maxCost: t % 2 === 0 ? 4 : 1000,
+      });
+      const reference = randomPermutation(n, rng);
+      const { status, data } = await callMigrate({ costs, reference });
+      const oracle = bruteForceMigrate(costs, reference);
+      if (oracle === null) {
+        expect(status).toBe(409);
+        expect(data.error).toBe('NO_PERFECT_ASSIGNMENT');
+        continue;
+      }
+      expect(status).toBe(200);
+      // 第一级：精确最小总费用（可按当前矩阵复算）
+      const sum = assertAssignmentPerfect(costs, data.assignment);
+      expect(sum).toBe(data.totalCost);
+      expect(data.totalCost).toBe(oracle.totalCost);
+      // 第二级：同成本完美匹配中变更行最少
+      let changed = 0;
+      for (let i = 0; i < n; i++) if (data.assignment[i] !== reference[i]) changed++;
+      expect(data.changedRows).toBe(changed);
+      expect(data.changedRows).toBe(oracle.minChanged);
+      // 结果必须是两级最优集合中的一员
+      const isBest = oracle.optimalAssignments.some((p) =>
+        p.every((j, i) => j === data.assignment[i])
+      );
+      expect(isBest).toBe(true);
+    }
+  });
+
+  it('参考旧线在新矩阵中已禁配：仍可迁移，该行计入变更', async () => {
+    // 行 0 只能配列 0。
+    const costs = [
+      [5, null],
+      [6, 8],
+    ];
+    const { status, data } = await callMigrate({ costs, reference: [1, 0] });
+    expect(status).toBe(200);
+    expect(data.assignment).toEqual([0, 1]);
+    expect(data.totalCost).toBe(13);
+    expect(data.changedRows).toBe(2); // (0,1) 已禁配，无法保留
+  });
+
+  it('参考旧线全禁配但可行解唯一：正常返回，不 422', async () => {
+    const costs = [
+      [5, null, null],
+      [null, 7, null],
+      [null, null, 9],
+    ];
+    const { status, data } = await callMigrate({ costs, reference: [2, 0, 1] });
+    expect(status).toBe(200);
+    expect(data.assignment).toEqual([0, 1, 2]);
+    expect(data.changedRows).toBe(3);
+  });
+
+  it('新矩阵无完美匹配：409 且不携带方案', async () => {
+    const costs = [
+      [5, null, null],
+      [2, null, null],
+      [7, 1, 3],
+    ];
+    const { status, data } = await callMigrate({ costs, reference: [0, 1, 2] });
+    expect(status).toBe(409);
+    expect(data.error).toBe('NO_PERFECT_ASSIGNMENT');
+    expect(data.assignment).toBeUndefined();
+    expect(data.changedRows).toBeUndefined();
+  });
+
+  it('排除一个配对后重迁：仍为最小成本，变更数按新禁配重算', async () => {
+    const first = await callMigrate({ costs: good, reference: [3, 0, 1, 2] });
+    expect(first.status).toBe(200);
+    const reduced = good.map((row) => row.slice());
+    reduced[0][3] = null; // 排除参考的首条旧线
+    const second = await callMigrate({ costs: reduced, reference: [3, 0, 1, 2] });
+    if (second.status === 200) {
+      expect(second.data.assignment[0]).not.toBe(3);
+      expect(second.data.changedRows).toBeGreaterThanOrEqual(1);
+      const sum = assertAssignmentPerfect(reduced, second.data.assignment);
+      expect(sum).toBe(second.data.totalCost);
+      // 第一级目标仍是新矩阵的最小总成本（不因参考抬高）
+      const oracle = bruteForceMigrate(reduced, [3, 0, 1, 2]);
+      expect(second.data.totalCost).toBe(oracle.totalCost);
+      expect(second.data.changedRows).toBe(oracle.minChanged);
+    } else {
+      expect(second.status).toBe(409);
+    }
+  });
+});
+
+describe('POST /api/migrate：参考非法在求解前整批 422', () => {
+  const good4 = good;
+  const badRefs = [
+    ['缺少 reference 字段', { costs: good4 }],
+    ['reference 为 null', { costs: good4, reference: null }],
+    ['reference 不是数组', { costs: good4, reference: '3012' }],
+    ['reference 是对象', { costs: good4, reference: { 0: 3 } }],
+    ['规模不符：长度不足', { costs: good4, reference: [3, 0, 1] }],
+    ['规模不符：长度超长', { costs: good4, reference: [3, 0, 1, 2, 0] }],
+    ['列重复（非排列）', { costs: good4, reference: [3, 0, 0, 2] }],
+    ['列越界（=n）', { costs: good4, reference: [3, 0, 1, 4] }],
+    ['列越界（负数）', { costs: good4, reference: [3, -1, 1, 2] }],
+    ['非整数列', { costs: good4, reference: [3, 0, 1.5, 2] }],
+    ['字符串列', { costs: good4, reference: [3, '0', 1, 2] }],
+    ['null 元素', { costs: good4, reference: [3, null, 1, 2] }],
+  ];
+  for (const [name, payload] of badRefs) {
+    it(name, async () => {
+      const { status, data } = await callSolve(payload, { path: '/api/migrate' });
+      expect(status).toBe(422);
+      expect(data.status).toBe('error');
+      expect(data.error).toBe('INVALID_INPUT');
+      expect(data.assignment).toBeUndefined();
+      expect(data.changedRows).toBeUndefined();
+    });
+  }
+
+  it('矩阵本身非法时同样 422（先校验矩阵）', async () => {
+    const { status, data } = await callSolve({ costs: [[1, 2]], reference: [0, 1] }, { path: '/api/migrate' });
+    expect(status).toBe(422);
+    expect(data.error).toBe('INVALID_INPUT');
+  });
+
+  it('参考命中禁配边不算非法：不 422，正常求解', async () => {
+    const costs = [
+      [5, null],
+      [6, 8],
+    ];
+    const { status, data } = await callSolve({ costs, reference: [1, 0] }, { path: '/api/migrate' });
+    expect(status).toBe(200);
+    expect(data.changedRows).toBe(2);
+  });
+
+  it('/api/migrate 与 /api/solve 互不影响：旧接口忽略 reference，响应无 mode/changedRows', async () => {
+    const { status, data } = await callSolve({ costs: good, reference: [0, 1, 2, 3] });
+    expect(status).toBe(200);
+    expect(data.mode).toBeUndefined();
+    expect(data.changedRows).toBeUndefined();
+    expect(data.reference).toBeUndefined();
+    expect(Array.isArray(data.pairFlags)).toBe(true); // 旧版必然分析原样保留
+    expect(data.totalCost).toBe(205);
+  });
+});
+
+describe('POST /api/migrate：n=400 性能与精度', () => {
+  it('三秒内返回：两级匈牙利均在安全整数范围内', async () => {
+    const n = 400;
+    const rng = mulberry32(2026092903);
+    const costs = Array.from({ length: n }, () =>
+      Array.from({ length: n }, () => Math.floor(rng() * 1_000_000))
+    );
+    const reference = randomPermutation(n, rng);
+    const { status, data, elapsedMs } = await callSolve({ costs, reference }, { path: '/api/migrate' });
+    expect(status).toBe(200);
+    expect(data.assignment).toHaveLength(n);
+    expect(Number.isSafeInteger(data.totalCost)).toBe(true);
+    expect(data.changedRows).toBeGreaterThanOrEqual(0);
+    expect(data.changedRows).toBeLessThanOrEqual(n);
+    const sum = assertAssignmentPerfect(costs, data.assignment);
+    expect(sum).toBe(data.totalCost);
+    // eslint-disable-next-line no-console
+    console.log(`n=${n} 迁移端到端耗时 ${Math.round(elapsedMs)} ms，变更 ${data.changedRows} 行`);
+    expect(elapsedMs).toBeLessThan(3000);
   });
 });
 

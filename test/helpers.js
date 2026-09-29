@@ -90,3 +90,49 @@ export function randomCostMatrix(n, rng, { forbiddenRate = 0, maxCost = 99 } = {
     )
   );
 }
+
+// 迁移两级目标的穷举预言机：枚举全部可行完美匹配，先取最小总代价，
+// 再在同成本最优集合中取相对 reference 变更行数最小者。
+// 返回 null 表示无完美匹配；否则 { totalCost, minChanged, optimalAssignments }
+// （optimalAssignments 为达到两级目标的全部匹配，供断言求解结果落在其中）。
+export function bruteForceMigrate(costs, reference) {
+  const n = costs.length;
+  const feasible = [];
+
+  const changedOf = (p) => {
+    let c = 0;
+    for (let i = 0; i < n; i++) if (p[i] !== reference[i]) c++;
+    return c;
+  };
+
+  const permute = (rest, picked, sum) => {
+    if (rest.length === 0) {
+      feasible.push({ assignment: picked.slice(), totalCost: sum, changed: changedOf(picked) });
+      return;
+    }
+    const i = picked.length;
+    for (let k = 0; k < rest.length; k++) {
+      const j = rest[k];
+      const c = costs[i][j];
+      if (c === null) continue;
+      picked.push(j);
+      const next = rest.slice(0, k).concat(rest.slice(k + 1));
+      permute(next, picked, sum + c);
+      picked.pop();
+    }
+  };
+
+  permute(Array.from({ length: n }, (_, j) => j), [], 0);
+  if (feasible.length === 0) return null;
+
+  const totalCost = feasible.reduce((m, x) => Math.min(m, x.totalCost), Infinity);
+  const optimal = feasible.filter((x) => x.totalCost === totalCost);
+  const minChanged = optimal.reduce((m, x) => Math.min(m, x.changed), Infinity);
+  const best = optimal.filter((x) => x.changed === minChanged);
+
+  return {
+    totalCost,
+    minChanged,
+    optimalAssignments: best.map((x) => x.assignment),
+  };
+}

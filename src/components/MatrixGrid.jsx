@@ -5,7 +5,7 @@ const HEAD = 46;       // 行/列表头宽度/高度 px
 const OVERSCAN = 4;    // 视口外预渲染格数
 
 // 只渲染可视区域内的格子（n=400 时约几百个），表头跟随滚动平移。
-export default function MatrixGrid({ n, matrix, matchedSet, matchedMarks, locked, excludedHint, onEdit }) {
+export default function MatrixGrid({ n, matrix, matchedSet, matchedMarks, referenceSet, locked, excludedHint, onEdit }) {
   const scrollRef = useRef(null);
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
@@ -54,6 +54,7 @@ export default function MatrixGrid({ n, matrix, matchedSet, matchedMarks, locked
       const key = i * n + j;
       const matched = matchedSet ? matchedSet.has(key) : false;
       const mark = matched && matchedMarks ? matchedMarks.get(key) : null;
+      const isReference = referenceSet ? referenceSet.has(key) : false;
       const justExcluded = excludedHint && excludedHint.i === i && excludedHint.j === j;
       cells.push(
         <Cell
@@ -63,6 +64,7 @@ export default function MatrixGrid({ n, matrix, matchedSet, matchedMarks, locked
           value={value}
           matched={matched}
           mark={mark}
+          isReference={isReference}
           justExcluded={justExcluded}
           disabled={locked}
           onEdit={onEdit}
@@ -125,7 +127,7 @@ export default function MatrixGrid({ n, matrix, matchedSet, matchedMarks, locked
   );
 }
 
-function Cell({ i, j, value, matched, mark, justExcluded, disabled, onEdit }) {
+function Cell({ i, j, value, matched, mark, isReference, justExcluded, disabled, onEdit }) {
   const [text, setText] = useState(value === null ? '' : String(value));
   const [editing, setEditing] = useState(false);
 
@@ -156,9 +158,12 @@ function Cell({ i, j, value, matched, mark, justExcluded, disabled, onEdit }) {
   const className = [
     'cell',
     isNull ? 'forbidden' : '',
+    isReference ? 'reference-cell' : '',
     matched ? 'matched' : '',
     matched && mark === 'forced' ? 'match-forced' : '',
     matched && mark === 'flexible' ? 'match-flexible' : '',
+    matched && mark === 'kept' ? 'match-kept' : '',
+    matched && mark === 'changed' ? 'match-changed' : '',
     justExcluded ? 'just-excluded' : '',
   ]
     .filter(Boolean)
@@ -169,7 +174,11 @@ function Cell({ i, j, value, matched, mark, justExcluded, disabled, onEdit }) {
       ? '，必然连线（所有同价最优方案都采用）'
       : matched && mark === 'flexible'
         ? '，可替换（存在其他最优方案）'
-        : '';
+        : matched && mark === 'kept'
+          ? '，保持旧线（与旧接线参考一致）'
+          : matched && mark === 'changed'
+            ? '，改线（相对旧接线参考变更）'
+            : '';
 
   return (
     <div

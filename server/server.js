@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { NoPerfectAssignmentError } from './hungarian.js';
 import { analyzeMandatoryPairs } from './mandatory.js';
-import { validateCosts } from './validation.js';
+import { migrateWithReference } from './migrate.js';
+import { validateCosts, validateReference } from './validation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = join(__dirname, '..', 'dist');
@@ -59,6 +60,55 @@ export async function buildServer() {
         // 与 assignment 逐行对齐：forced=该连线出现在所有最优完美匹配中；
         // alternatives=该探针在最优解中可改配的其他列数（forced 时为 0）。
         pairFlags,
+      });
+    } catch (err) {
+      if (err instanceof NoPerfectAssignmentError) {
+        return reply.status(409).send({
+          status: 'error',
+          error: 'NO_PERFECT_ASSIGNMENT',
+          message: '禁配关系下不存在覆盖全部探针与测试座的完美匹配',
+        });
+      }
+      throw err;
+    }
+  });
+
+  // 迁移求解：先最小化新矩阵总代价，再在所有同成本完美匹配中最小化相对
+  // reference（旧接线参考）的变更行数。不做加权合并，顺序求解两次匈牙利。
+  // 迁移模式不返回 pairFlags，也不沿用旧方案的必然标记——返回体只有新配对、
+  // 精确费用与变更行数。
+  app.post('/api/migrate', async (request, reply) => {
+    const result = validateCosts(request.body);
+    if (!result.ok) {
+      return reply.status(422).send({
+        status: 'error',
+        error: 'INVALID_INPUT',
+        message: result.reason,
+      });
+    }
+    // 参考的规模/排列/字段非法在求解前整批拒绝（旧线命中禁配边不算非法）。
+    const refResult = validateReference(request.body, result.n);
+    if (!refResult.ok) {
+      return reply.status(422).send({
+        status: 'error',
+        error: 'INVALID_INPUT',
+        message: refResult.reason,
+      });
+    }
+
+    try {
+      const { assignment, totalCost, changedRows } = migrateWithReference(
+        request.body.costs,
+        refResult.reference
+      );
+      return reply.send({
+        status: 'ok',
+        mode: 'migrate',
+        n: result.n,
+        assignment, // 新配对：最小总代价，且相对参考变更行最少
+        totalCost, // 精确整数，可由 assignment 对新矩阵直接复算
+        changedRows, // 与 reference 逐行不同的行数（参考边已禁配时该行自然计入）
+        reference: refResult.reference, // 回显本次实际使用的参考，供页面核对归属
       });
     } catch (err) {
       if (err instanceof NoPerfectAssignmentError) {

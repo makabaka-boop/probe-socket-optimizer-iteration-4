@@ -446,3 +446,138 @@ input[type='number'] {
   z-index: 6;
   font-size: 10px;
 }
+
+/* 迁移求解按钮：与普通求解区分 */
+button.migrate-btn {
+  background: #2a2350;
+  border-color: #6e5fd9;
+  color: #c9c1ff;
+  font-weight: 600;
+}
+
+button.migrate-btn:hover:not(:disabled) {
+  background: #352c6b;
+  border-color: #8b7dff;
+}
+
+button.pin-btn,
+button.link-btn {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+/* 旧接线参考面板 */
+.reference-panel {
+  background: var(--panel);
+  border: 1px solid #6e5fd9;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.reference-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.reference-head strong {
+  color: #c9c1ff;
+  font-size: 13px;
+}
+
+.reference-chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  max-height: 64px;
+  overflow-y: auto;
+}
+
+.ref-chip {
+  font-size: 11px;
+  color: #b3a8f0;
+  background: rgba(110, 95, 217, 0.14);
+  border: 1px solid rgba(110, 95, 217, 0.5);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.ref-chip.ref-forbidden {
+  color: #ff9d97;
+  background: var(--red-bg);
+  border-color: rgba(248, 81, 73, 0.6);
+  text-decoration: line-through;
+}
+
+/* 旧接线参考占用格：紫框提示（不区分本次是否采用） */
+.cell.reference-cell {
+  box-shadow: inset 0 0 0 2px rgba(139, 125, 255, 0.85);
+  z-index: 2;
+}
+
+/* 迁移结果：保持旧线=蓝绿实边；改线=品红虚边 */
+.migrate-result {
+  border-color: #6e5fd9;
+}
+
+.migrate-result h2 {
+  color: #a599ff;
+}
+
+.pair.kept {
+  background: rgba(46, 160, 67, 0.18);
+  border-color: rgba(46, 160, 67, 0.6);
+}
+
+.pair.changed {
+  background: rgba(210, 79, 160, 0.13);
+  border: 1px dashed rgba(233, 120, 192, 0.7);
+}
+
+.migrate-flag {
+  white-space: nowrap;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.migrate-flag.is-kept {
+  background: rgba(46, 160, 67, 0.28);
+  color: #7ee787;
+  border: 1px solid rgba(46, 160, 67, 0.6);
+}
+
+.migrate-flag.is-changed {
+  background: rgba(210, 79, 160, 0.2);
+  color: #f093d0;
+  border: 1px solid rgba(210, 79, 160, 0.6);
+}
+
+.changed-summary {
+  font-size: 13px;
+  color: #c9c1ff;
+}
+
+.kept-dot {
+  background: var(--green);
+}
+
+.changed-dot {
+  background: #d24fa0;
+}
+
+.cell.match-kept {
+  background: rgba(46, 160, 67, 0.28);
+  box-shadow: inset 0 0 0 2px var(--green);
+}
+
+.cell.match-changed {
+  background: rgba(210, 79, 160, 0.18);
+  box-shadow: inset 0 0 0 2px #d24fa0;
+}
+
