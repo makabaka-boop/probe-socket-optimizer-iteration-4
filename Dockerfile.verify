@@ -1,0 +1,8 @@
+# 验收镜像：包含全部源码与测试依赖，启动后对 web 容器执行端到端验收。
+FROM node:20-bookworm-slim
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY . .
+# 等待 web 健康，再对 TARGET_BASE_URL 运行同一套 Vitest（API 测试自动切换为真实 HTTP 模式）。
+CMD ["sh", "-c", "node ./verify/wait-http.mjs $TARGET_BASE_URL/api/health && npx vitest run"]

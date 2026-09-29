@@ -1,0 +1,35 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: probe-assignment-web:latest
+    environment:
+      # 容器内 Fastify 固定监听 3000；宿主机发布端口由 WEB_PORT 决定（默认 8080）。
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      LOG_LEVEL: "warn"
+    ports:
+      - "${WEB_PORT:-8080}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # 验收服务：对已发布的 web 服务发真实 HTTP 请求运行 Vitest（含穷举核对与 n=400 性能）。
+  # 用法：docker compose run --rm verify
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile.verify
+    image: probe-assignment-verify:latest
+    depends_on:
+      web:
+        required: false
+        condition: service_started
+    environment:
+      TARGET_BASE_URL: "http://web:3000"
+      CI: "true"
+    profiles: ["verify"]

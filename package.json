@@ -1,0 +1,30 @@
+{
+  "name": "probe-assignment",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "芯片老化台探针-测试座最小权完美二分匹配（O(n^3) 匈牙利算法）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node server/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/static": "^7.0.4",
+    "fastify": "^4.29.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8"
+  }
+}
